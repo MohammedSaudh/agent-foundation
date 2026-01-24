@@ -22,14 +22,15 @@ before introducing machine learning.
 
 
 ## Project Structure
-src/
-ingest/ # RSS ingestion
-models/ # Core data models
-storage/ # SQLite persistence
-ranking/ # Novelty scoring (baseline)
-run.py # Entry point
+    ```
+    src/
+        ingest/     # RSS ingestion
+        models/     # Core data models
+        storage/    # SQLite persistence
+        ranking/    # Novelty scoring (baseline)
+    run.py          # Entry point
 
----
+    ```
 
 ## Why a Baseline First?
 
