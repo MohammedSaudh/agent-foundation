@@ -4,6 +4,7 @@ from src.storage.sqlite import insert_articles
 from src.storage.sqlite import get_recent_articles
 from src.ranking.novelty import novelty_score
 from src.storage.sqlite import get_existing_article_ids
+from src.ranking.embedding import embedding_novelty_score, embed_texts
 
 
 
@@ -63,6 +64,7 @@ if __name__ == "__main__":
     #build history text from stored articles
     history_articles = get_recent_articles(limit = 200)
     history_texts = [f"{a.title} {a.excerpt}" for a in history_articles]
+    history_embeddings = embed_texts(history_texts) if history_texts else None
 
 
 
@@ -98,7 +100,11 @@ if __name__ == "__main__":
     scored = []
     for a in new_articles:
         text = f"{a.title} {a.excerpt}"
-        nov = novelty_score(text, history_texts)
+        nov = embedding_novelty_score(
+            text,
+            history_texts,
+            history_embeddings
+        )
         imp = importance_score(text)
 
         final = (0.7 * nov) + (0.3 * min(1.0, imp/6.0))

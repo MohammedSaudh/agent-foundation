@@ -83,3 +83,20 @@ def get_recent_articles(limit: int = 50, db_path: str = "data.db") -> list[Artic
         )
 
     return articles
+
+
+def get_existing_article_ids(ids: list[str], db_path: str = "data.db") -> set[str]:
+    if not ids:
+        return set()
+    
+    conn = sqlite3.connect(db_path)
+    placeholders = ",".join(["?"] * len(ids))
+
+    rows = conn.execute(
+            f"SELECT id FROM articles WHERE id IN ({placeholders})",
+            ids,
+
+        ).fetchall()
+    
+    conn.close()
+    return {r[0] for r in rows}
