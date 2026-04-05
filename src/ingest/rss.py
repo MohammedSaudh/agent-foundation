@@ -1,4 +1,4 @@
-from __future__ import annotations                                               # Helps Python handle type hints better
+from __future__ import annotations                                               #Helps Python handle type hints better
 import hashlib                                                                   #Hashlib for article ID generation
 from collections.abc import Iterable, Mapping                                    #Import generic collection protocols for flexible typed inputs.
 from typing import Any                                                           #import Any because feed entries can contain mixed value types
