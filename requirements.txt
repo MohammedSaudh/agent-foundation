@@ -1,0 +1,4 @@
+feedparser
+numpy
+python-dateutil
+sentence-transformers

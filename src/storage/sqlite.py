@@ -1,240 +1,236 @@
-import sqlite3  # Import the standard library for SQLite database interaction
-from typing import List  # Import List for type hinting the article collections
-from datetime import datetime, timezone  # Import datetime tools to handle UTC timestamps
-from src.models.article import Article  # Import your custom Article data class/model
-import uuid #Generate unique post ids
-from urllib.parse import urlsplit, urlunsplit  #Clean UTM tracking params from URLs
+import sqlite3  # Import SQLite support from the standard library.
+from typing import List  # Import List for typing article collections.
+from datetime import datetime, timezone  # Import UTC timestamp helpers.
+from urllib.parse import urlsplit, urlunsplit  # Import URL parsing helpers.
+import uuid  # Import UUID generator for draft post IDs.
+
+from src.models.article import Article  # Import the shared Article model.
 
 
-def clean_url(url: str) -> str:  #remove query string + fragment to strip tracking paramters.
+def clean_url(url: str) -> str:
+    # Split the URL into parts so query strings and fragments can be removed.
     parts = urlsplit(url)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))  #Rebuild url without query/Fragment.
+    # Rebuild the URL without query parameters and fragments.
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
-def insert_post_draft(article_id: str, platform: str, content: str, db_path: str = "ingestion.db") -> str:  # Insert a draft post and return post_id
-    conn = sqlite3.connect(db_path)  # Open DB connection
-    post_id = str(uuid.uuid4())  # Create unique post id
-    created_at_utc = datetime.now(timezone.utc).isoformat()  # Timestamp draft creation in UTC
-    conn.execute(  # Insert draft row into posts
-        """
-        INSERT INTO posts (id, article_id, platform, content, status, created_at_utc)
-        VALUES (?, ?, ?, ?, 'draft', ?)
-        """,
-        (post_id, article_id, platform, content, created_at_utc),
-    )  # End insert
-    conn.commit()  # Save changes
-    conn.close()  # Close connection
-    return post_id  # Return new post id
+def ensure_columns(conn, table: str, required_cols: dict) -> None:
+    # Create a cursor to inspect the table schema.
+    cur = conn.cursor()
+    # Read the current list of columns from the SQLite table metadata.
+    cur.execute(f"PRAGMA table_info({table});")
+    # Fetch all returned schema rows.
+    rows = cur.fetchall()
+    # Build a set of existing column names for quick lookup.
+    existing = {row[1] for row in rows}
+
+    # Loop through every required column definition.
+    for col, col_def in required_cols.items():
+        # Add the column only if it does not already exist.
+        if col not in existing:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def};")
 
 
-def get_draft_posts(limit: int = 50, db_path: str = "ingestion.db") -> list[sqlite3.Row]:  # Fetch draft posts joined with article context
-    conn = sqlite3.connect(db_path)  # Open DB connection
-    conn.row_factory = sqlite3.Row  # Return dict-like rows
-    rows = conn.execute(  # Select drafts + article context
-        """
-        SELECT
-            p.id AS post_id,
-            p.platform,
-            p.content,
-            p.created_at_utc,
-            a.id AS article_id,
-            a.source,
-            a.title,
-            a.url,
-            a.published_at
-        FROM posts p
-        JOIN articles a ON a.id = p.article_id
-        WHERE p.status = 'draft'
-        ORDER BY p.created_at_utc DESC
-        LIMIT ?
-        """,
-        (limit,),
-    ).fetchall()  # Fetch all
-    conn.close()  # Close connection
-    return rows  # Return result rows
-
-
-def review_post(post_id: str, decision: str, note: str = "", db_path: str = "ingestion.db") -> None:  # Approve or reject a draft post
-    if decision not in {"approved", "rejected"}:  # Validate decision input
-        raise ValueError("decision must be 'approved' or 'rejected'")  # Fail fast if invalid decision
-    conn = sqlite3.connect(db_path)  # Open DB connection
-    reviewed_at_utc = datetime.now(timezone.utc).isoformat()  # Timestamp review in UTC
-    conn.execute(  # Update draft row to approved/rejected with review metadata
-        """
-        UPDATE posts
-        SET status = ?, reviewed_at_utc = ?, reviewer_note = ?
-        WHERE id = ? AND status = 'draft'
-        """,
-        (decision, reviewed_at_utc, note, post_id),
-    )  # End update
-    conn.commit()  # Save changes
-    conn.close()  # Close connection
-
-
-
-def ensure_columns(conn, table: str, required_cols: dict) -> None:  # Safely add missing columns to an existing table
-    cur = conn.cursor()  # Create a cursor object to execute SQL commands
-    cur.execute(f"PRAGMA table_info({table});")  # Query the database for the table's current structure
-    rows = cur.fetchall()  # Retrieve all rows of metadata about the table's columns
-    existing = {row[1] for row in rows}  # Create a set of column names that already exist
-
-    for col, col_def in required_cols.items():  # Iterate through required columns and definitions
-        if col not in existing:  # Check if the required column is missing from the table
-            cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def};")  # Add the missing column using SQL ALTER
-
-
-def init_posts_table(conn) -> None:  # Create posts table for customized drafts and later publishing (HITL workflow)
-    conn.execute(  # Execute SQL to create posts table if it doesn't already exist
+def init_posts_table(conn) -> None:
+    # Create the posts table if it does not already exist.
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS posts(
-            id TEXT PRIMARY KEY,  -- Unique id for the post (uuid or hash)
-            article_id TEXT NOT NULL,  -- Source article used for this post
-            platform TEXT NOT NULL,  -- Platform: 'x' or 'linkedin'
-            content TEXT NOT NULL,  -- Draft text content
-            status TEXT NOT NULL CHECK(status IN ('draft','approved','queued','published','rejected','failed')),  -- HITL states
-            created_at_utc TEXT NOT NULL,  -- When draft was created
-            reviewed_at_utc TEXT,  -- When you reviewed it (approve/reject)
-            reviewer_note TEXT,  -- Optional note you leave during review
-            scheduled_at_utc TEXT,  -- When it should be posted
-            published_at_utc TEXT,  -- When it was posted
-            error TEXT,  -- Failure reason if failed
-            FOREIGN KEY(article_id) REFERENCES articles(id)  -- Link back to article
+            id TEXT PRIMARY KEY,
+            article_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            content TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('draft','approved','queued','published','rejected','failed')),
+            created_at_utc TEXT NOT NULL,
+            reviewed_at_utc TEXT,
+            reviewer_note TEXT,
+            scheduled_at_utc TEXT,
+            published_at_utc TEXT,
+            error TEXT,
+            FOREIGN KEY(article_id) REFERENCES articles(id)
         )
         """
-    )  # End CREATE TABLE statement
+    )
 
-    conn.execute(  # Create an index to speed up finding draft posts for review
+    # Create an index to speed up draft/review lookups by status and creation time.
+    conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_posts_status_created
         ON posts(status, created_at_utc)
         """
-    )  # End CREATE INDEX statement
+    )
 
 
-def init_db(db_path: str = "ingestion.db") -> None:  # Initialize database schema (articles + posts)
-    conn = sqlite3.connect(db_path)  # Establish a connection to the SQLite database file
+def init_db(db_path: str = "ingestion.db") -> None:
+    # Open a connection to the SQLite database file.
+    conn = sqlite3.connect(db_path)
 
-    conn.execute(  # Execute SQL to create articles table if it doesn't already exist
+    # Create the articles table if it does not already exist.
+    conn.execute(
         """
         CREATE TABLE IF NOT EXISTS articles(
-            id TEXT PRIMARY KEY,  -- Unique identifier for each article
-            source TEXT NOT NULL,  -- Name of the news source (e.g., RSS feed name)
-            title TEXT NOT NULL,  -- The headline of the article
-            url TEXT NOT NULL,  -- The direct link to the news story
-            published_at TEXT,  -- The date/time the article was originally published
-            excerpt TEXT NOT NULL  -- A short summary or snippet of the content
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            title TEXT NOT NULL,
+            url TEXT NOT NULL,
+            published_at TEXT,
+            excerpt TEXT NOT NULL
         )
         """
-    )  # End CREATE TABLE statement for articles
+    )
 
-    ensure_columns(conn, "articles", {"ingested_at_utc": "TEXT"})  # Ensure ingestion timestamp column exists for older DBs
+    # Make sure older databases also have the ingestion timestamp column.
+    ensure_columns(conn, "articles", {"ingested_at_utc": "TEXT"})
 
-    init_posts_table(conn)  # Ensure posts table exists for human-in-the-loop review workflow
+    # Make sure the posts table also exists.
+    init_posts_table(conn)
 
-    conn.commit()  # Save all schema changes to the database
-    conn.close()  # Close the database connection to free up resources
+    # Save schema changes.
+    conn.commit()
+    # Close the database connection.
+    conn.close()
 
 
-def insert_articles(articles: List[Article], db_path: str = "ingestion.db") -> int:  # Insert new articles and return how many were inserted
-    conn = sqlite3.connect(db_path)  # Connect to the specified ingestion database
+def insert_articles(articles: List[Article], db_path: str = "ingestion.db") -> int:
+    # Open a connection to the SQLite database.
+    conn = sqlite3.connect(db_path)
 
-    ensure_columns(conn, "articles", {"ingested_at_utc": "TEXT"})  # Ensure column exists before inserting into it
+    # Make sure older databases also have the ingestion timestamp column.
+    ensure_columns(conn, "articles", {"ingested_at_utc": "TEXT"})
 
-    inserted = 0  # Initialize a counter to track how many new articles are saved
-    ingested_now_utc = datetime.now(timezone.utc).isoformat()  # Generate a single UTC timestamp for the batch
+    # Start a counter for successfully inserted new rows.
+    inserted = 0
+    # Generate one batch timestamp for this ingestion run.
+    ingested_now_utc = datetime.now(timezone.utc).isoformat()
 
-    for article in articles:  # Loop through each article object provided in the list
-        try:  # Use try/except to handle potential unique-constraint errors (duplicates)
-            conn.execute(  # Execute insertion command using placeholders
+    # Loop through every article passed into the function.
+    for article in articles:
+        try:
+            # Insert the article into the database.
+            conn.execute(
                 """
                 INSERT INTO articles (id, source, title, url, published_at, excerpt, ingested_at_utc)
-                VALUES(?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    article.id,  # The unique ID (usually a hash of the URL or title)
-                    article.source,  # The origin of the article
-                    article.title,  # The news headline
-                    article.url,  # The web link
-                    article.published_at,  # Original publication timestamp
-                    article.excerpt,  # Brief text summary
-                    ingested_now_utc,  # Our internal timestamp for when we found it
+                    article.id,
+                    article.source,
+                    article.title,
+                    article.url,
+                    article.published_at,
+                    article.excerpt,
+                    ingested_now_utc,
                 ),
-            )  # End insert execution
+            )
 
-            inserted += 1  # Increment counter if insertion succeeded
-        except sqlite3.IntegrityError:  # Catch error if the ID already exists in the database
-            pass  # Skip duplicates and continue
+            # Increase the inserted counter if the insert succeeds.
+            inserted += 1
 
-    conn.commit()  # Commit all successful insertions to the database file
-    conn.close()  # Close the connection
-    return inserted  # Return the total count of new articles added to the system
+        except sqlite3.IntegrityError:
+            # Skip duplicate article IDs instead of crashing the pipeline.
+            pass
+
+    # Save all successful inserts.
+    conn.commit()
+    # Close the connection.
+    conn.close()
+    # Return how many new rows were inserted.
+    return inserted
 
 
-def get_recent_articles(limit: int = 50, db_path: str = "ingestion.db") -> list[Article]:  # Fetch newest articles as Article objects
-    conn = sqlite3.connect(db_path)  # Connect to the ingestion database
-    conn.row_factory = sqlite3.Row  # Return rows as dict-like objects
+def get_recent_articles(limit: int = 50, db_path: str = "ingestion.db") -> list[Article]:
+    # Open a connection to the SQLite database.
+    conn = sqlite3.connect(db_path)
+    # Return rows as dict-like objects instead of tuples.
+    conn.row_factory = sqlite3.Row
 
-    rows = conn.execute(  # Execute query to get newest articles
+    # Read the most recent articles, falling back to ingested_at_utc when published_at is missing.
+    rows = conn.execute(
         """
         SELECT id, source, title, url, published_at, excerpt
         FROM articles
-        ORDER BY COALESCE(published_at, ingested_at_utc) DESC  -- Sort by published time, fallback to ingested time
+        ORDER BY COALESCE(published_at, ingested_at_utc) DESC
         LIMIT ?
         """,
         (limit,),
-    ).fetchall()  # Fetch all rows
+    ).fetchall()
 
-    conn.close()  # Close connection
+    # Close the connection.
+    conn.close()
 
-    return [  # Convert rows to Article objects
+    # Convert database rows back into Article objects.
+    return [
         Article(
-            id=r["id"],
-            source=r["source"],
-            title=r["title"],
-            url=r["url"],
-            published_at=r["published_at"],
-            excerpt=r["excerpt"],
+            id=row["id"],
+            source=row["source"],
+            title=row["title"],
+            url=row["url"],
+            published_at=row["published_at"],
+            excerpt=row["excerpt"],
         )
-        for r in rows
-    ]  # Return list of articles
+        for row in rows
+    ]
 
 
-def get_existing_article_ids(ids: list[str], db_path: str = "ingestion.db") -> set[str]:  # Return which ids exist in DB already
-    if not ids:  # Handle empty input quickly
-        return set()  # Return empty set if nothing to check
+def get_existing_article_ids(ids: list[str], db_path: str = "ingestion.db") -> set[str]:
+    # Return early if the caller passed an empty list.
+    if not ids:
+        return set()
 
-    conn = sqlite3.connect(db_path)  # Connect to DB
-    placeholders = ",".join(["?"] * len(ids))  # Build ?,?,? placeholders for SQL IN clause
+    # Open a connection to the SQLite database.
+    conn = sqlite3.connect(db_path)
 
-    rows = conn.execute(  # Execute query to fetch existing ids
+    # Build the correct number of placeholders for the SQL IN clause.
+    placeholders = ",".join(["?"] * len(ids))
+
+    # Fetch the subset of IDs that already exist in the articles table.
+    rows = conn.execute(
         f"SELECT id FROM articles WHERE id IN ({placeholders})",
         ids,
-    ).fetchall()  # Fetch results
+    ).fetchall()
 
-    conn.close()  # Close DB connection
-    return {r[0] for r in rows}  # Return a set of existing ids
+    # Close the connection.
+    conn.close()
+
+    # Return the existing IDs as a set for fast membership checks.
+    return {row[0] for row in rows}
 
 
-def insert_post_draft(article_id: str, platform: str, content: str, db_path: str = "ingestion.db") -> str:  # Insert a new post draft and return its id
-    conn = sqlite3.connect(db_path)  # Open DB connection
-    post_id = str(uuid.uuid4())  # Create a unique post id
-    created_at_utc = datetime.now(timezone.utc).isoformat()  # Timestamp draft creation in UTC
-    conn.execute(  # Insert a new row in posts as a draft
+def insert_post_draft(article_id: str, platform: str, content: str, db_path: str = "ingestion.db") -> str:
+    # Open a connection to the SQLite database.
+    conn = sqlite3.connect(db_path)
+
+    # Generate a unique ID for the draft post.
+    post_id = str(uuid.uuid4())
+    # Generate a UTC timestamp for when the draft was created.
+    created_at_utc = datetime.now(timezone.utc).isoformat()
+
+    # Insert the draft post into the posts table.
+    conn.execute(
         """
         INSERT INTO posts (id, article_id, platform, content, status, created_at_utc)
         VALUES (?, ?, ?, ?, 'draft', ?)
         """,
         (post_id, article_id, platform, content, created_at_utc),
-    )  # End insert
-    conn.commit()  # Save changes
-    conn.close()  # Close connection
-    return post_id  # Return the created post id
+    )
+
+    # Save the insert.
+    conn.commit()
+    # Close the connection.
+    conn.close()
+
+    # Return the generated draft post ID.
+    return post_id
 
 
-def get_draft_posts(limit: int = 50, db_path: str = "ingestion.db") -> list[sqlite3.Row]:  # Fetch draft posts joined with article context for review
-    conn = sqlite3.connect(db_path)  # Open DB connection
-    conn.row_factory = sqlite3.Row  # Return dict-like rows
-    rows = conn.execute(  # Select draft posts plus relevant article fields
+def get_draft_posts(limit: int = 50, db_path: str = "ingestion.db") -> list[sqlite3.Row]:
+    # Open a connection to the SQLite database.
+    conn = sqlite3.connect(db_path)
+    # Return rows as dict-like objects.
+    conn.row_factory = sqlite3.Row
+
+    # Fetch draft posts along with their related article context.
+    rows = conn.execute(
         """
         SELECT
             p.id AS post_id,
@@ -253,25 +249,37 @@ def get_draft_posts(limit: int = 50, db_path: str = "ingestion.db") -> list[sqli
         LIMIT ?
         """,
         (limit,),
-    ).fetchall()  # Fetch results
-    conn.close()  # Close connection
-    return rows  # Return rows for CLI printing
+    ).fetchall()
+
+    # Close the connection.
+    conn.close()
+
+    # Return the fetched draft rows.
+    return rows
 
 
-def review_post(post_id: str, decision: str, note: str = "", db_path: str = "ingestion.db") -> None:  # Approve or reject a draft post with an optional note
-    if decision not in {"approved", "rejected"}:  # Validate decision input
-        raise ValueError("decision must be 'approved' or 'rejected'")  # Fail fast on invalid input
+def review_post(post_id: str, decision: str, note: str = "", db_path: str = "ingestion.db") -> None:
+    # Reject invalid review decisions immediately.
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("decision must be 'approved' or 'rejected'")
 
-    conn = sqlite3.connect(db_path)  # Open DB connection
-    reviewed_at_utc = datetime.now(timezone.utc).isoformat()  # Timestamp the review action in UTC
-    conn.execute(  # Update the post row with review outcome
+    # Open a connection to the SQLite database.
+    conn = sqlite3.connect(db_path)
+
+    # Generate a UTC timestamp for when the review happened.
+    reviewed_at_utc = datetime.now(timezone.utc).isoformat()
+
+    # Update the draft post with the review outcome.
+    conn.execute(
         """
         UPDATE posts
         SET status = ?, reviewed_at_utc = ?, reviewer_note = ?
         WHERE id = ? AND status = 'draft'
         """,
         (decision, reviewed_at_utc, note, post_id),
-    )  # End update
-    conn.commit()  # Save changes
-    conn.close()  # Close connection
+    )
 
+    # Save the update.
+    conn.commit()
+    # Close the connection.
+    conn.close()
