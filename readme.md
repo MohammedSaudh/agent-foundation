@@ -1,38 +1,30 @@
 # Agent Foundation
 
-A crypto-focused news intelligence project that ingests RSS feeds, filters noise, stores articles in SQLite, and ranks new articles by how much **new** and **important** information they contain.
+A crypto research alert pipeline designed to help researchers find genuinely important developments faster by filtering noise, deduplicating repeated coverage, and ranking new articles by novelty and research relevance.
 
-This project started as a simple rule-based baseline and is now evolving into a more semantic, ML-assisted ranking pipeline.
+## What it does
 
----
-
-## What the project does
-
-- Ingests RSS feeds from major crypto news sources
-- Normalizes articles into a fixed internal `Article` format
+- Ingests RSS feeds from crypto news sources
+- Normalizes articles into a fixed `Article` schema
 - Stores articles in SQLite with deterministic ID-based deduplication
-- Filters out non-crypto and low-value content
-- Scores articles on:
-  - **Novelty** → how different the article is from recent history
-  - **Importance** → rule-based weighting for regulation, security incidents, ETFs, institutional moves, and protocol changes
-- Ranks only **newly seen** articles instead of re-ranking old history
+- Filters low-value content such as price analysis and roundup-style posts
+- Scores new articles using novelty, importance, and source-aware signals
+- Outputs structured research alerts for manual review
 
----
+## Current capabilities
 
-## Current Capabilities
-
-- RSS ingestion from multiple sources
-- Canonical `Article` data model
-- SQLite storage
+- RSS ingestion
+- Canonical article model
+- SQLite persistence
 - Hash-based deduplication
-- Crypto-only filtering
 - Low-value content filtering
-- Baseline novelty scoring
-- Embedding-based semantic novelty module
-- Importance scoring using domain rules
+- Semantic novelty scoring
+- Rule-based importance scoring
 - End-to-end runnable pipeline
+- Review CSV export for manual evaluation
 
----
+## Quick start
+
 
 ## Project Structure
     ```
@@ -40,7 +32,7 @@ This project started as a simple rule-based baseline and is now evolving into a 
         ingest/     # RSS ingestion
         models/     # Core data models
         storage/    # SQLite persistence
-        ranking/    # Novelty scoring (baseline)
+        ranking/    # scoring rules and logic
     run.py          # Entry point
 
     ```
@@ -65,11 +57,12 @@ So the system is best described as a **hybrid pipeline**:
 
 Planned next steps:
 
-- Fully switch ranking from lexical novelty to embedding-based novelty
-- Cache embeddings for faster repeated runs
-- Cluster articles into stories / events before ranking
-- Add source-aware weighting
-- Generate daily “what actually changed today” crypto digests
+- Build a labeled dataset from pipeline outputs for researcher-signal vs noise classification
+- Train a first-pass signal-vs-noise classifier to improve shortlist quality
+- Improve event-level clustering so repeated coverage of the same story does not dominate results
+- Add source-aware weighting to better separate primary sources from secondary coverage
+- Move from rule-based importance scoring toward learned ranking
+- Track shortlist-quality metrics such as Precision@5, noise rate, and duplicate rate
 - Explore stronger embedding models and optional fine-tuning later
 
 ---
