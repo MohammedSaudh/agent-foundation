@@ -1,10 +1,17 @@
 # Enable postponed evaluation of type hints.
 from __future__ import annotations
 
+# Import CSV support so the top alerts can be exported for manual review.
+import csv
+# Import Path so output folders and files can be handled cleanly.
+from pathlib import Path
+
 # Import the feed list and source metadata.
 from config.sources import SOURCE_META, SOURCES
 # Import the RSS fetcher that already exists in your project.
 from src.ingest.rss import fetch_rss_articles
+# Import the low-value filter.
+from src.ranking.noise_filter import split_low_value_articles
 # Import the ranking function and ranked result type.
 from src.ranking.importance import RankedAlert, rank_articles
 # Import database helpers for setup, duplicate checking, insertion, and history loading.
@@ -72,6 +79,94 @@ def print_alerts(alerts: list[RankedAlert], top_k: int = 5) -> None:
         print(f"URL: {alert.article.url}")
 
 
+# Export the top alerts into a CSV for manual review.
+def export_review_csv(alerts: list[RankedAlert], output_path: str = "evaluation/top5_review.csv", top_k: int = 5) -> None:
+    # Create the output folder if it does not already exist.
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    # Open the CSV file for writing.
+    with open(output_path, mode="w", newline="", encoding="utf-8") as file:
+        # Create a CSV writer object.
+        writer = csv.writer(file)
+
+        # Write the header row.
+        writer.writerow([
+            "rank",
+            "article_id",
+            "source",
+            "title",
+            "category",
+            "importance_score",
+            "novelty_score",
+            "url",
+            "label_signal_or_noise",
+            "label_duplicate",
+            "label_primary_source_quality",
+            "notes",
+        ])
+
+        # Write one row per top alert.
+        for idx, alert in enumerate(alerts[:top_k], start=1):
+            writer.writerow([
+                idx,
+                alert.article.id,
+                alert.article.source,
+                alert.article.title,
+                alert.category,
+                alert.importance_score,
+                alert.novelty_score,
+                alert.article.url,
+                "",
+                "",
+                "",
+                "",
+            ])
+
+
+# Compute a simple manual-evaluation metric from a finished review CSV.
+def compute_precision_at_k(review_csv_path: str = "evaluation/top5_review.csv") -> None:
+    # Build the path object for the review file.
+    path = Path(review_csv_path)
+
+    # Stop early if the review file does not exist yet.
+    if not path.exists():
+        print("\nNo review CSV found yet, so Precision@5 cannot be computed.")
+        return
+
+    # Open the review CSV.
+    with open(path, mode="r", newline="", encoding="utf-8") as file:
+        # Read all rows into memory.
+        rows = list(csv.DictReader(file))
+
+    # Stop early if the file is empty.
+    if not rows:
+        print("\nReview CSV is empty, so Precision@5 cannot be computed.")
+        return
+
+    # Keep only rows where the label has been filled in.
+    labeled_rows = [row for row in rows if row["label_signal_or_noise"].strip()]
+
+    # Stop early if nothing has been labeled yet.
+    if not labeled_rows:
+        print("\nTop-5 review exported. Fill in the labels first, then rerun to compute Precision@5.")
+        return
+
+    # Count how many labeled rows are marked as research signal.
+    signal_count = sum(
+        1
+        for row in labeled_rows
+        if row["label_signal_or_noise"].strip().lower() == "research_signal"
+    )
+
+    # Compute precision using only the labeled rows.
+    precision = signal_count / len(labeled_rows)
+
+    # Print the metric.
+    print(f"\nManual evaluation")
+    print("=" * 80)
+    print(f"Precision@{len(labeled_rows)} = {precision:.2f} ({signal_count}/{len(labeled_rows)})")
+
+
 # Main entry point for the full research-alert pipeline.
 def main() -> None:
     # Print a startup message so you know the script is actually running.
@@ -103,25 +198,45 @@ def main() -> None:
     # Stop early if there is nothing new to rank.
     if not new_articles:
         print("No new articles found. Nothing to rank right now.")
+        compute_precision_at_k()
+        return
+
+    # Remove obvious low-value articles before ranking.
+    filtered_articles, removed_articles = split_low_value_articles(new_articles)
+    # Print how many were removed by the noise filter.
+    print(f"Removed as low-value noise: {len(removed_articles)}")
+    # Print how many remain after filtering.
+    print(f"Articles remaining after noise filter: {len(filtered_articles)}")
+
+    # Stop early if the noise filter removed everything.
+    if not filtered_articles:
+        print("All new articles were filtered out as low-value.")
         return
 
     # Load recent article history so novelty can be calculated against past content.
     history_texts = build_history_texts(limit=200)
 
-    # Rank the new articles using source quality, impact, novelty, breadth, and urgency.
+    # Rank the filtered articles using source quality, impact, novelty, breadth, and urgency.
     ranked_alerts = rank_articles(
-        articles=new_articles,
+        articles=filtered_articles,
         history_texts=history_texts,
         source_meta=SOURCE_META,
     )
 
-    # Insert the new articles into the database after scoring them.
-    inserted = insert_articles(new_articles)
+    # Insert the filtered articles into the database after scoring them.
+    inserted = insert_articles(filtered_articles)
     # Print how many new articles were saved.
-    print(f"Inserted {inserted} new articles into ingestion.db")
+    print(f"Inserted {inserted} filtered articles into ingestion.db")
 
     # Print the top ranked research alerts in the terminal.
     print_alerts(ranked_alerts, top_k=5)
+
+    # Export the current top 5 for manual review.
+    export_review_csv(ranked_alerts, output_path="F:/Projects/aget-foundation/evaluation/top5_review.csv", top_k=5)
+    print("\nExported top-5 review file to evaluation/top5_review.csv")
+
+    # Try to compute Precision@K if the review file already contains labels.
+    compute_precision_at_k()
 
 
 # Run the main function only when this file is executed directly.
